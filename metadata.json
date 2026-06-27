@@ -1,0 +1,6 @@
+{
+  "name": "EduIntel AI",
+  "description": "A national-scale UNEB Education Intelligence Platform leveraging a powerful analytics engine and Gemini AI to analyze historical examination data, trends, and school rankings in Uganda.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
