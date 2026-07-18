@@ -2,7 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { AnalyticsEngine } from './src/lib/analyticsEngine.js';
 import { SCHOOLS, DISTRICTS, SUBJECTS, YEARLY_PERFORMANCE } from './src/data/unebData.js';
 import { ExamLevel } from './src/types.js';
@@ -113,7 +113,7 @@ app.get('/api/analytics/national', (req, res) => {
 // AI Chat - Implements the full AI pipeline:
 // User Question -> ContextEngine (Intent Detection & Retrieval) -> PromptBuilder -> Gemma -> Structured AI Response
 app.post('/api/chat', async (req, res) => {
-  const { message, chatHistory = [], sessionId = "default" } = req.body;
+  const { message, chatHistory = [], sessionId = "default", role = "statistician", thinking = false } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'Message is required' });
@@ -137,17 +137,40 @@ app.post('/api/chat', async (req, res) => {
     // 2. Retrieve structured calculations & context from Analytics Engine
     const context = await ContextEngine.getContext(plan);
 
-    // 3. Compile prompt with robust system rules
-    const systemInstruction = PromptBuilder.getSystemPrompt();
+    // 3. Compile prompt with robust system rules using selected role
+    const systemInstruction = PromptBuilder.getSystemPrompt(role);
     const compiledPrompt = PromptBuilder.buildExplanationPrompt(message, plan, context, chatHistory);
+
+    // Select suitable model and configuration based on intent, role, and thinking level parameters
+    let modelName = 'gemini-3.5-flash';
+    const apiConfig: any = {
+      systemInstruction: systemInstruction
+    };
+
+    if (thinking) {
+      modelName = 'gemini-3.1-pro-preview';
+      apiConfig.thinkingConfig = {
+        thinkingLevel: ThinkingLevel.HIGH
+      };
+      // Note: Do not set maxOutputTokens when using thinkingLevel HIGH
+    } else {
+      const fastIntents = ["rankings", "district_performance", "general_help"];
+      const complexIntents = ["predict", "policy_recommendations", "school_improvement"];
+
+      if (role === "policy_consultant" || complexIntents.includes(plan.intent)) {
+        modelName = 'gemini-3.1-pro-preview';
+      } else if (role === "student_coach" || fastIntents.includes(plan.intent)) {
+        modelName = 'gemini-3.1-flash-lite';
+      } else {
+        modelName = 'gemini-3.5-flash';
+      }
+    }
 
     // 4. Generate content from Gemma with Retry
     const response = await callGeminiWithRetry(ai, {
-      model: 'gemini-3.5-flash',
+      model: modelName,
       contents: compiledPrompt,
-      config: {
-        systemInstruction: systemInstruction
-      }
+      config: apiConfig
     });
 
     res.json({
@@ -252,7 +275,12 @@ Your output must be a valid JSON object matching this schema exactly, and nothin
       config: { responseMimeType: "application/json" }
     });
 
-    const parsed = JSON.parse(response.text ? response.text.trim() : '{}');
+    const rawText = response.text ? response.text.trim() : '{}';
+    let cleanText = rawText;
+    if (cleanText.startsWith("```")) {
+      cleanText = cleanText.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/\s*```$/, "").trim();
+    }
+    const parsed = JSON.parse(cleanText);
     res.json(parsed);
   } catch (error: any) {
     console.error(error);
@@ -300,12 +328,17 @@ Your output must be a valid JSON object matching this schema exactly, and nothin
 `;
 
     const response = await callGeminiWithRetry(ai, {
-      model: 'gemini-3.5-flash',
+      model: 'gemini-3.1-pro-preview',
       contents: policyPrompt,
       config: { responseMimeType: "application/json" }
     });
 
-    const parsed = JSON.parse(response.text ? response.text.trim() : '{}');
+    const rawText = response.text ? response.text.trim() : '{}';
+    let cleanText = rawText;
+    if (cleanText.startsWith("```")) {
+      cleanText = cleanText.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/\s*```$/, "").trim();
+    }
+    const parsed = JSON.parse(cleanText);
     res.json(parsed);
   } catch (error: any) {
     console.error(error);
@@ -358,12 +391,17 @@ Your output must be a valid JSON object matching this schema exactly, and nothin
 `;
 
     const response = await callGeminiWithRetry(ai, {
-      model: 'gemini-3.5-flash',
+      model: 'gemini-3.1-pro-preview',
       contents: improvementPrompt,
       config: { responseMimeType: "application/json" }
     });
 
-    const parsed = JSON.parse(response.text ? response.text.trim() : '{}');
+    const rawText = response.text ? response.text.trim() : '{}';
+    let cleanText = rawText;
+    if (cleanText.startsWith("```")) {
+      cleanText = cleanText.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/\s*```$/, "").trim();
+    }
+    const parsed = JSON.parse(cleanText);
     res.json(parsed);
   } catch (error: any) {
     console.error(error);
@@ -413,12 +451,17 @@ Your output must be a valid JSON object matching this schema exactly, and nothin
 `;
 
     const response = await callGeminiWithRetry(ai, {
-      model: 'gemini-3.5-flash',
+      model: 'gemini-3.1-flash-lite',
       contents: studentPrompt,
       config: { responseMimeType: "application/json" }
     });
 
-    const parsed = JSON.parse(response.text ? response.text.trim() : '{}');
+    const rawText = response.text ? response.text.trim() : '{}';
+    let cleanText = rawText;
+    if (cleanText.startsWith("```")) {
+      cleanText = cleanText.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/\s*```$/, "").trim();
+    }
+    const parsed = JSON.parse(cleanText);
     res.json(parsed);
   } catch (error: any) {
     console.error(error);
@@ -470,12 +513,17 @@ Your output must be a valid JSON object matching this schema exactly, and nothin
 `;
 
     const response = await callGeminiWithRetry(ai, {
-      model: 'gemini-3.5-flash',
+      model: 'gemini-3.1-pro-preview',
       contents: predictionPrompt,
       config: { responseMimeType: "application/json" }
     });
 
-    const parsed = JSON.parse(response.text ? response.text.trim() : '{}');
+    const rawText = response.text ? response.text.trim() : '{}';
+    let cleanText = rawText;
+    if (cleanText.startsWith("```")) {
+      cleanText = cleanText.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/\s*```$/, "").trim();
+    }
+    const parsed = JSON.parse(cleanText);
     res.json(parsed);
   } catch (error: any) {
     console.error(error);

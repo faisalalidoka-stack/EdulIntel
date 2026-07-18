@@ -53,11 +53,16 @@ export interface StudyPlanPayload {
 }
 
 export class GemmaService {
-  static async chat(message: string, chatHistory: { sender: string; text: string }[] = []): Promise<AIResponsePayload> {
+  static async chat(
+    message: string,
+    chatHistory: { sender: string; text: string }[] = [],
+    role: string = "statistician",
+    thinking: boolean = false
+  ): Promise<AIResponsePayload> {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, chatHistory }),
+      body: JSON.stringify({ message, chatHistory, role, thinking }),
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();

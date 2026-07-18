@@ -37,6 +37,8 @@ export default function AIAnalyst({ initialSearchQuery, onClearSearchQuery, onNa
     }
   ]);
 
+  const [selectedRole, setSelectedRole] = useState<string>("statistician");
+  const [isThinking, setIsThinking] = useState<boolean>(false);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -71,7 +73,7 @@ export default function AIAnalyst({ initialSearchQuery, onClearSearchQuery, onNa
     if (!text) return;
 
     const userMsg: LocalChatMessage = {
-      id: `user_${Date.now()}`,
+      id: `user_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       sender: "user",
       text,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -84,11 +86,13 @@ export default function AIAnalyst({ initialSearchQuery, onClearSearchQuery, onNa
     try {
       const result = await GemmaService.chat(
         text,
-        messages.map(m => ({ sender: m.sender, text: m.text }))
+        messages.map(m => ({ sender: m.sender, text: m.text })),
+        selectedRole,
+        isThinking
       );
 
       const assistantMsg: LocalChatMessage = {
-        id: `assistant_${Date.now()}`,
+        id: `assistant_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         sender: "assistant",
         text: result.reply,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -99,7 +103,7 @@ export default function AIAnalyst({ initialSearchQuery, onClearSearchQuery, onNa
     } catch (error: any) {
       console.error(error);
       const errMessage: LocalChatMessage = {
-        id: `error_${Date.now()}`,
+        id: `error_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         sender: "assistant",
         text: "Apologies, I encountered an error communicating with the EduIntel server. Please verify that your Gemini API Key is correctly configured in your environment.",
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -198,7 +202,7 @@ export default function AIAnalyst({ initialSearchQuery, onClearSearchQuery, onNa
 
                       return (
                         <div 
-                          key={sid}
+                          key={`${sid}_${idx}`}
                           style={{ height: `${passRate}%` }}
                           className={`w-3.5 ${color} rounded-t-xs hover:scale-105 transition-all relative group cursor-pointer`}
                         >
@@ -220,7 +224,7 @@ export default function AIAnalyst({ initialSearchQuery, onClearSearchQuery, onNa
               const barColors = ["bg-blue-600", "bg-indigo-600", "bg-emerald-600", "bg-amber-600"];
               const color = barColors[idx % barColors.length];
               return (
-                <div key={sid} className="flex items-center gap-1">
+                <div key={`${sid}_${idx}`} className="flex items-center gap-1">
                   <span className={`w-2 h-2 rounded-full ${color}`} />
                   <span className="text-[10px] text-slate-500 font-semibold">{school?.name}</span>
                 </div>
@@ -347,6 +351,71 @@ export default function AIAnalyst({ initialSearchQuery, onClearSearchQuery, onNa
         </button>
       </div>
 
+      {/* Configuration Toolbar */}
+      <div className="px-6 py-3 border-b border-slate-100 bg-slate-50/20 flex flex-wrap items-center justify-between gap-4 shrink-0 text-xs">
+        {/* Role Selector */}
+        <div className="flex items-center gap-2">
+          <span className="font-bold text-slate-500">Expert Persona:</span>
+          <div className="flex bg-slate-100 p-0.5 rounded-xl border border-slate-200">
+            <button
+              type="button"
+              onClick={() => setSelectedRole("statistician")}
+              className={`px-3 py-1 rounded-lg font-bold transition-all ${
+                selectedRole === "statistician"
+                  ? "bg-white text-blue-700 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Senior Statistician
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedRole("policy_consultant")}
+              className={`px-3 py-1 rounded-lg font-bold transition-all ${
+                selectedRole === "policy_consultant"
+                  ? "bg-white text-blue-700 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Policy Consultant
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedRole("student_coach")}
+              className={`px-3 py-1 rounded-lg font-bold transition-all ${
+                selectedRole === "student_coach"
+                  ? "bg-white text-blue-700 shadow-2xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Exam Coach
+            </button>
+          </div>
+        </div>
+
+        {/* High Thinking Mode Toggle */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-slate-500 flex items-center gap-1">
+              <Brain className="w-3.5 h-3.5 text-indigo-500 animate-pulse" /> High Thinking Mode (Gemini 3.1 Pro):
+            </span>
+            <button
+              type="button"
+              onClick={() => setIsThinking(!isThinking)}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                isThinking ? "bg-indigo-600" : "bg-slate-200"
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                  isThinking ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* Messages Scroll Area */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/30">
         <AnimatePresence initial={false}>
@@ -408,7 +477,15 @@ export default function AIAnalyst({ initialSearchQuery, onClearSearchQuery, onNa
               <div className="bg-white border border-slate-100 p-5 rounded-2xl rounded-tl-none shadow-2xs max-w-md">
                 <div className="flex items-center gap-3 text-sm text-slate-500 font-semibold">
                   <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
-                  <span>Gemma is planning database queries and analyzing UNEB models...</span>
+                  <span>
+                    {isThinking
+                      ? "EduIntel AI (Pro) is deep reasoning and compiling statistics..."
+                      : selectedRole === "policy_consultant"
+                      ? "Policy Consultant is analyzing educational indicators..."
+                      : selectedRole === "student_coach"
+                      ? "Exam Coach is tailoring a supportive study guide..."
+                      : "Statistician is planning database queries and analyzing UNEB models..."}
+                  </span>
                 </div>
               </div>
             </div>

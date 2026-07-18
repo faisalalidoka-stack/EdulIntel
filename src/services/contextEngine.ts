@@ -146,7 +146,7 @@ Previous Session Context: ${JSON.stringify(session)}
 Return a strict JSON object adhering to the specified schema.
 `;
         const res = await aiInstance.models.generateContent({
-          model: 'gemini-3.5-flash',
+          model: 'gemini-3.1-flash-lite',
           contents: prompt,
           config: {
             responseMimeType: "application/json",
@@ -182,7 +182,12 @@ Return a strict JSON object adhering to the specified schema.
           }
         });
 
-        const parsed = JSON.parse(res.text ? res.text.trim() : '{}');
+        const rawText = res.text ? res.text.trim() : '{}';
+        let cleanText = rawText;
+        if (cleanText.startsWith("```")) {
+          cleanText = cleanText.replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/\s*```$/, "").trim();
+        }
+        const parsed = JSON.parse(cleanText);
         if (parsed.intent) {
           intent = parsed.intent;
           if (parsed.level) level = parsed.level === "UACE" ? ExamLevel.UACE : ExamLevel.UCE;
