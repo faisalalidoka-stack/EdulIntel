@@ -39,6 +39,7 @@ export default function AIAnalyst({ initialSearchQuery, onClearSearchQuery, onNa
 
   const [selectedRole, setSelectedRole] = useState<string>("statistician");
   const [isThinking, setIsThinking] = useState<boolean>(false);
+  const [selectedModel, setSelectedModel] = useState<string>("auto");
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -88,7 +89,8 @@ export default function AIAnalyst({ initialSearchQuery, onClearSearchQuery, onNa
         text,
         messages.map(m => ({ sender: m.sender, text: m.text })),
         selectedRole,
-        isThinking
+        isThinking,
+        selectedModel
       );
 
       const assistantMsg: LocalChatMessage = {
@@ -393,18 +395,41 @@ export default function AIAnalyst({ initialSearchQuery, onClearSearchQuery, onNa
           </div>
         </div>
 
+        {/* Model Selector */}
+        <div className="flex items-center gap-2">
+          <span className="font-bold text-slate-500">AI Model:</span>
+          <select
+            value={selectedModel}
+            onChange={(e) => {
+              setSelectedModel(e.target.value);
+              if (e.target.value !== "auto") {
+                setIsThinking(false);
+              }
+            }}
+            className="bg-white border border-slate-200 text-slate-700 rounded-lg px-2 py-1 font-bold focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer shadow-3xs"
+          >
+            <option value="auto">Auto-Select (Optimized)</option>
+            <option value="models/gemma-4-31b-it">Gemma 4 31B (State of the Art)</option>
+            <option value="models/gemma-4-26b-a4b-it">Gemma 4 26B (Optimized Speed)</option>
+            <option value="gemma-2-27b-it">Gemma 2 27B (Intellectual)</option>
+            <option value="gemma-2-9b-it">Gemma 2 9B (Responsive)</option>
+            <option value="gemma-2-2b-it">Gemma 2 2B (Lightweight)</option>
+          </select>
+        </div>
+
         {/* High Thinking Mode Toggle */}
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <span className="font-bold text-slate-500 flex items-center gap-1">
+            <span className={`font-bold flex items-center gap-1 transition-opacity ${selectedModel !== "auto" ? "opacity-40" : ""}`}>
               <Brain className="w-3.5 h-3.5 text-indigo-500 animate-pulse" /> High Thinking Mode (Gemini 3.1 Pro):
             </span>
             <button
               type="button"
+              disabled={selectedModel !== "auto"}
               onClick={() => setIsThinking(!isThinking)}
               className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
                 isThinking ? "bg-indigo-600" : "bg-slate-200"
-              }`}
+              } ${selectedModel !== "auto" ? "opacity-40 cursor-not-allowed" : ""}`}
             >
               <span
                 className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
@@ -478,7 +503,9 @@ export default function AIAnalyst({ initialSearchQuery, onClearSearchQuery, onNa
                 <div className="flex items-center gap-3 text-sm text-slate-500 font-semibold">
                   <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
                   <span>
-                    {isThinking
+                    {selectedModel !== "auto"
+                      ? `${selectedModel.includes("gemma-4") ? "Gemma 4" : selectedModel.includes("gemma-2") || selectedModel.startsWith("gemma") ? "Gemma 2" : "Selected Model"} is processing educational statistics...`
+                      : isThinking
                       ? "EduIntel AI (Pro) is deep reasoning and compiling statistics..."
                       : selectedRole === "policy_consultant"
                       ? "Policy Consultant is analyzing educational indicators..."

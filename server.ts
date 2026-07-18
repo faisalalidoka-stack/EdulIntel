@@ -113,7 +113,7 @@ app.get('/api/analytics/national', (req, res) => {
 // AI Chat - Implements the full AI pipeline:
 // User Question -> ContextEngine (Intent Detection & Retrieval) -> PromptBuilder -> Gemma -> Structured AI Response
 app.post('/api/chat', async (req, res) => {
-  const { message, chatHistory = [], sessionId = "default", role = "statistician", thinking = false } = req.body;
+  const { message, chatHistory = [], sessionId = "default", role = "statistician", thinking = false, model = "auto" } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'Message is required' });
@@ -147,7 +147,9 @@ app.post('/api/chat', async (req, res) => {
       systemInstruction: systemInstruction
     };
 
-    if (thinking) {
+    if (model && model !== 'auto') {
+      modelName = model;
+    } else if (thinking) {
       modelName = 'gemini-3.1-pro-preview';
       apiConfig.thinkingConfig = {
         thinkingLevel: ThinkingLevel.HIGH

@@ -57,12 +57,13 @@ export class GemmaService {
     message: string,
     chatHistory: { sender: string; text: string }[] = [],
     role: string = "statistician",
-    thinking: boolean = false
+    thinking: boolean = false,
+    model: string = "auto"
   ): Promise<AIResponsePayload> {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, chatHistory, role, thinking }),
+      body: JSON.stringify({ message, chatHistory, role, thinking, model }),
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
