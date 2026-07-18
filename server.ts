@@ -4,8 +4,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import { AnalyticsEngine } from './src/lib/analyticsEngine.js';
-import { SCHOOLS, DISTRICTS, SUBJECTS } from './src/data/unebData.js';
+import { SCHOOLS, DISTRICTS, SUBJECTS, YEARLY_PERFORMANCE } from './src/data/unebData.js';
 import { ExamLevel } from './src/types.js';
+import { ContextEngine } from './src/services/contextEngine.js';
+import { PromptBuilder } from './src/services/promptBuilder.js';
 
 dotenv.config();
 
@@ -20,6 +22,24 @@ app.use(express.json());
 // Initialize Gemini API
 const apiKey = process.env.GEMINI_API_KEY;
 const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+
+// Helper to call Gemini with robust exponential backoff retries (handles temporary 503 load spikes)
+async function callGeminiWithRetry(aiClient: any, params: any, maxRetries = 3, delayMs = 1500): Promise<any> {
+  let attempt = 0;
+  while (attempt < maxRetries) {
+    try {
+      return await aiClient.models.generateContent(params);
+    } catch (error: any) {
+      attempt++;
+      console.warn(`Gemini API call failed (attempt ${attempt}/${maxRetries}):`, error);
+      if (attempt >= maxRetries) {
+        throw error;
+      }
+      // Wait before retrying (exponential backoff)
+      await new Promise(resolve => setTimeout(resolve, delayMs * Math.pow(2, attempt - 1)));
+    }
+  }
+}
 
 // API Endpoint for dynamic analytics retrieval
 app.get('/api/analytics/rankings', (req, res) => {
@@ -91,9 +111,9 @@ app.get('/api/analytics/national', (req, res) => {
 });
 
 // AI Chat - Implements the full AI pipeline:
-// User Question -> AI Query Planner -> Analytics Engine -> Database -> Calculated Results -> AI Explanation Layer -> Final User Response
+// User Question -> ContextEngine (Intent Detection & Retrieval) -> PromptBuilder -> Gemma -> Structured AI Response
 app.post('/api/chat', async (req, res) => {
-  const { message, chatHistory = [] } = req.body;
+  const { message, chatHistory = [], sessionId = "default" } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'Message is required' });
@@ -111,126 +131,38 @@ app.post('/api/chat', async (req, res) => {
   }
 
   try {
-    // --- STEP 1: AI QUERY PLANNER ---
-    // Use gemini-3.5-flash to structure the intent and extract metadata in structured JSON
-    const plannerPrompt = `
-You are the AI Query Planner for the UNEB Education Intelligence Platform.
-Analyze the user's question and map it to one of our Analytics Engine functions.
+    // 1. Resolve intent with memory integration
+    const plan = await ContextEngine.resolveIntent(message, chatHistory, ai, sessionId);
 
-Available Schools: ${JSON.stringify(SCHOOLS.map(s => ({ id: s.id, name: s.name })))}
-Available Districts: ${JSON.stringify(DISTRICTS.map(d => ({ id: d.id, name: d.name })))}
-Available Subjects: ${JSON.stringify(SUBJECTS.map(s => s.name))}
+    // 2. Retrieve structured calculations & context from Analytics Engine
+    const context = await ContextEngine.getContext(plan);
 
-Your output must be a valid JSON object matching this schema exactly, and nothing else (no backticks, no markdown):
-{
-  "intent": "rankings" | "compare" | "district_performance" | "subject_strength" | "predict" | "national_stats" | "outliers" | "general_help",
-  "schoolIds": string[], // ids of schools identified in the question
-  "districtId": string, // id of district identified in the question
-  "year": number, // academic year between 2015 and 2025 (default 2025)
-  "level": "UCE" | "UACE", // (default "UCE" unless specified "A-level" or "UACE" or "U.A.C.E")
-  "subjectName": string // name of the subject if specified (e.g. "Mathematics", "Physics")
-}
+    // 3. Compile prompt with robust system rules
+    const systemInstruction = PromptBuilder.getSystemPrompt();
+    const compiledPrompt = PromptBuilder.buildExplanationPrompt(message, plan, context, chatHistory);
 
-User Question: "${message}"
-`;
-
-    const plannerResponse = await ai.models.generateContent({
+    // 4. Generate content from Gemma with Retry
+    const response = await callGeminiWithRetry(ai, {
       model: 'gemini-3.5-flash',
-      contents: plannerPrompt,
+      contents: compiledPrompt,
       config: {
-        responseMimeType: "application/json"
+        systemInstruction: systemInstruction
       }
     });
 
-    let plan: any = { intent: "general_help", schoolIds: [], year: 2025, level: ExamLevel.UCE };
-    try {
-      const cleanedText = plannerResponse.text ? plannerResponse.text.trim() : '{}';
-      plan = JSON.parse(cleanedText);
-    } catch (e) {
-      console.error("Failed to parse planner output:", plannerResponse.text);
-    }
-
-    // --- STEP 2: ANALYTICS ENGINE INVOCATION ---
-    let calculatedResults: any = null;
-    let calculationTrace = "";
-
-    switch (plan.intent) {
-      case "rankings":
-        calculatedResults = AnalyticsEngine.getRankings(plan.year || 2025, plan.level || ExamLevel.UCE).slice(0, 10);
-        calculationTrace = `Retrieved top 10 ranked schools for ${plan.level || 'UCE'} in ${plan.year || 2025}`;
-        break;
-
-      case "compare":
-        const idsToCompare = plan.schoolIds && plan.schoolIds.length > 0 
-          ? plan.schoolIds 
-          : ["s_budo", "s_kitende"];
-        calculatedResults = AnalyticsEngine.compareSchools(idsToCompare, plan.level || ExamLevel.UCE);
-        calculationTrace = `Compared schools [${idsToCompare.join(', ')}] for ${plan.level || 'UCE'}`;
-        break;
-
-      case "district_performance":
-        calculatedResults = AnalyticsEngine.getDistrictPerformance(plan.year || 2025, plan.level || ExamLevel.UCE);
-        calculationTrace = `Calculated performance for districts in ${plan.year || 2025} (${plan.level || 'UCE'})`;
-        break;
-
-      case "subject_strength":
-        const targetSchoolId = plan.schoolIds && plan.schoolIds[0] ? plan.schoolIds[0] : "s_budo";
-        calculatedResults = AnalyticsEngine.getSubjectStrengths(targetSchoolId, plan.level || ExamLevel.UCE, plan.year || 2025);
-        calculationTrace = `Evaluated subject strengths/weaknesses for school ${targetSchoolId} in ${plan.year || 2025}`;
-        break;
-
-      case "predict":
-        const predSchoolId = plan.schoolIds && plan.schoolIds[0] ? plan.schoolIds[0] : "s_budo";
-        calculatedResults = AnalyticsEngine.predictPerformance(predSchoolId, plan.level || ExamLevel.UCE);
-        calculationTrace = `Ran linear regression forecast for school ${predSchoolId} (${plan.level || 'UCE'}) to 2026`;
-        break;
-
-      case "national_stats":
-        calculatedResults = AnalyticsEngine.getNationalStats(plan.year || 2025, plan.level || ExamLevel.UCE);
-        calculationTrace = `Calculated national aggregation stats for ${plan.year || 2025} (${plan.level || 'UCE'})`;
-        break;
-
-      case "outliers":
-        calculatedResults = AnalyticsEngine.getOutlierSchools(plan.level || ExamLevel.UCE);
-        calculationTrace = `Identified national outlier schools (outstanding improvers and declining schools)`;
-        break;
-
-      default:
-        calculatedResults = AnalyticsEngine.getNationalStats(2025, ExamLevel.UCE);
-        calculationTrace = "Defaulted to 2025 National UCE statistics context";
-        break;
-    }
-
-    // --- STEP 3: AI EXPLANATION LAYER ---
-    const explanationPrompt = `
-You are the AI Explanation Layer for the Uganda National Examinations Board (UNEB) Education Intelligence Platform, "EduIntel AI".
-Your goal is to explain and summarize computed results from the national analytics engine to a user.
-
-CRITICAL RULE:
-- Do NOT make up or hallucinate any statistics.
-- ONLY speak using the calculated metrics provided below.
-- Keep the tone highly professional, objective, and authoritative.
-- Present your response using beautiful, structured Markdown. Use bold key terms and clean lists.
-
-User Question: "${message}"
-Matched Intent: ${plan.intent}
-Calculated Results from Analytics Engine (RAW DATA):
-${JSON.stringify(calculatedResults, null, 2)}
-
-Provide the final calculated response. State the reasoning behind each metric.
-`;
-
-    const explanationResponse = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
-      contents: explanationPrompt
-    });
-
     res.json({
-      reply: explanationResponse.text,
+      reply: response.text,
       trace: {
         intent: plan.intent,
-        queriesUsed: plan,
-        calculations: calculationTrace
+        queriesUsed: {
+          intent: plan.intent,
+          schoolIds: plan.schoolIds,
+          districtId: plan.districtId,
+          year: plan.year,
+          level: plan.level,
+          subjectName: plan.subjectName
+        },
+        calculations: plan.explanationTrace
       }
     });
 
@@ -249,17 +181,64 @@ app.post('/api/reports/generate', async (req, res) => {
   }
 
   try {
+    let reportContext: any = null;
+    
+    if (reportType === "school") {
+      const schoolId = targetId || "s_budo";
+      const school = SCHOOLS.find(s => s.id === schoolId) || SCHOOLS[0];
+      const consistency = AnalyticsEngine.getSchoolConsistency(schoolId, level);
+      const subjects = AnalyticsEngine.getSubjectStrengths(schoolId, level, year);
+      const prediction = AnalyticsEngine.predictPerformance(schoolId, level);
+      const history = YEARLY_PERFORMANCE.filter(p => p.schoolId === schoolId && p.level === level)
+        .sort((a, b) => a.year - b.year);
+      
+      reportContext = {
+        scope: "School Turnaround Report",
+        school,
+        consistency,
+        subjects,
+        prediction,
+        history
+      };
+    } else if (reportType === "district") {
+      const districtId = targetId || "d_kampala";
+      const district = DISTRICTS.find(d => d.id === districtId) || DISTRICTS[0];
+      const distPerf = AnalyticsEngine.getDistrictPerformance(year, level);
+      const specificPerf = distPerf.find(d => d.districtId === districtId);
+      
+      reportContext = {
+        scope: "District Education Management Brief",
+        district,
+        performance: specificPerf,
+        allDistrictsBenchmark: distPerf.slice(0, 5)
+      };
+    } else {
+      // default: national overview
+      const nationalStats = AnalyticsEngine.getNationalStats(year, level);
+      const outliers = AnalyticsEngine.getOutlierSchools(level);
+      
+      reportContext = {
+        scope: "National Educational Standards Report",
+        nationalStats,
+        outstandingImprovers: outliers.filter(o => o.type === "Outstanding Improver").slice(0, 5),
+        decliningSchools: outliers.filter(o => o.type === "Needs Support (Declining)").slice(0, 5)
+      };
+    }
+
     const reportPrompt = `
 You are a senior education intelligence analyst compiling a formal educational report for Uganda's Ministry of Education.
 Report Category: ${reportType} (context identifier: ${targetId || 'National Overview'})
 Academic Cycle: ${year}
 Curriculum: ${level}
 
+--- GROUND TRUTH DATA ---
+${JSON.stringify(reportContext, null, 2)}
+
 Your output must be a valid JSON object matching this schema exactly, and nothing else (no markdown backticks, no wrapping):
 {
-  "executiveSummary": "A concise paragraph summarizing core performance findings and strategic indicators",
-  "keyInsights": ["Insight 1", "Insight 2", "Insight 3"],
-  "trendAnalysis": "A short summary paragraph tracking performance trajectories across the decade",
+  "executiveSummary": "A concise paragraph summarizing core performance findings and strategic indicators based strictly on the ground truth data",
+  "keyInsights": ["Data Insight 1", "Data Insight 2", "Data Insight 3"],
+  "trendAnalysis": "A short summary paragraph tracking performance trajectories across the decade based on history",
   "predictions": "2026 forecast and projections for this target context based on linear regressions",
   "confidence": "Calculated statistical confidence description (e.g. High, R² = 0.94)",
   "recommendations": ["Recommendation 1", "Recommendation 2", "Recommendation 3"],
@@ -267,7 +246,7 @@ Your output must be a valid JSON object matching this schema exactly, and nothin
 }
 `;
 
-    const response = await ai.models.generateContent({
+    const response = await callGeminiWithRetry(ai, {
       model: 'gemini-3.5-flash',
       contents: reportPrompt,
       config: { responseMimeType: "application/json" }
@@ -290,23 +269,37 @@ app.post('/api/policy/advise', async (req, res) => {
   }
 
   try {
+    // Inject rich context: poverty rates, national stats, outstanding/declining regions
+    const districts = DISTRICTS.sort((a, b) => b.povertyRate - a.povertyRate); // high poverty first
+    const outliersList = AnalyticsEngine.getOutlierSchools(ExamLevel.UCE);
+    const uceStats = AnalyticsEngine.getNationalStats(2025, ExamLevel.UCE);
+    
+    const policyContext = {
+      marginalized_districts: districts.slice(0, 5),
+      declining_outliers: outliersList.filter(o => o.type === "Needs Support (Declining)").slice(0, 5),
+      national_averages: uceStats
+    };
+
     const policyPrompt = `
 You are a Senior Education Policy Strategist for the Republic of Uganda.
 Formulate a highly strategic, evidence-based advisory brief for the topic: "${topic}".
 Additional context query: "${queryText || 'None'}"
 
+--- GROUND TRUTH CONTEXT ---
+${JSON.stringify(policyContext, null, 2)}
+
 Your output must be a valid JSON object matching this schema exactly, and nothing else:
 {
-  "priorityAreas": "Identify primary areas at risk or requiring immediate interventions",
-  "evidence": "Detail quantitative data trends and historical benchmarks that support this intervention",
-  "expectedImpact": "Forecast expected performance increases or dropout rate reductions",
-  "costConsiderations": "Explain estimated budget structures, subsidies, or teacher allowances required",
+  "priorityAreas": "Identify primary areas at risk or requiring immediate interventions, referencing the specific districts and stats provided",
+  "evidence": "Detail quantitative data trends and historical benchmarks that support this intervention using exact context metrics",
+  "expectedImpact": "Forecast expected performance increases or dropout rate reductions (e.g., Target +5% in marginalized districts)",
+  "costConsiderations": "Explain estimated budget structures, subsidies, or teacher allowances required (e.g., regional teacher allowances)",
   "recommendedActions": ["Immediate strategic action 1", "Immediate strategic action 2", "Immediate strategic action 3"],
   "implementationTimeline": "Formulate a concrete quarterly timeline for deployment over 12-18 months"
 }
 `;
 
-    const response = await ai.models.generateContent({
+    const response = await callGeminiWithRetry(ai, {
       model: 'gemini-3.5-flash',
       contents: policyPrompt,
       config: { responseMimeType: "application/json" }
@@ -329,15 +322,30 @@ app.post('/api/school-improvement', async (req, res) => {
   }
 
   try {
-    const school = SCHOOLS.find(s => s.id === schoolId) || SCHOOLS[0];
+    const targetSchoolId = schoolId || "s_budo";
+    const school = SCHOOLS.find(s => s.id === targetSchoolId) || SCHOOLS[0];
+    const consistency = AnalyticsEngine.getSchoolConsistency(targetSchoolId, level);
+    const subjects = AnalyticsEngine.getSubjectStrengths(targetSchoolId, level, 2025);
+    const prediction = AnalyticsEngine.predictPerformance(targetSchoolId, level);
+
+    const improvementContext = {
+      school,
+      consistency,
+      subjects,
+      prediction
+    };
+
     const improvementPrompt = `
 You are an institutional turnaround consultant. Design a school improvement roadmap for:
 School: ${school.name} (District: ${school.districtName}, Level: ${level})
 
+--- INSTITUTIONAL GROUND TRUTH ---
+${JSON.stringify(improvementContext, null, 2)}
+
 Your output must be a valid JSON object matching this schema exactly, and nothing else:
 {
-  "strengths": ["Strength 1", "Strength 2", "Strength 3"],
-  "weaknesses": ["Weakness 1", "Weakness 2"],
+  "strengths": ["Strength 1 (citing specific subjects or consistency score)", "Strength 2", "Strength 3"],
+  "weaknesses": ["Weakness 1 (citing weak subjects or declining trend)", "Weakness 2"],
   "roadmap12Month": [
     { "month": "Months 1-3", "focus": "Brief focus description", "actions": ["Action 1", "Action 2"] },
     { "month": "Months 4-6", "focus": "Brief focus description", "actions": ["Action 1", "Action 2"] },
@@ -345,11 +353,11 @@ Your output must be a valid JSON object matching this schema exactly, and nothin
   ],
   "teacherRecs": ["Recommendation 1", "Recommendation 2"],
   "resourceRecs": ["Resource Upgrade 1", "Resource Upgrade 2"],
-  "expectedOutcomes": ["Outcome target 1", "Outcome target 2"]
+  "expectedOutcomes": ["Outcome target 1 (citing projected pass rates or mean scores)", "Outcome target 2"]
 }
 `;
 
-    const response = await ai.models.generateContent({
+    const response = await callGeminiWithRetry(ai, {
       model: 'gemini-3.5-flash',
       contents: improvementPrompt,
       config: { responseMimeType: "application/json" }
@@ -372,10 +380,23 @@ app.post('/api/student-assistant', async (req, res) => {
   }
 
   try {
+    // Get national aggregate averages for subjects
+    const uceStats = AnalyticsEngine.getNationalStats(2025, ExamLevel.UCE);
+    const targetSubjectAvg = uceStats?.subjectAverages.find(s => s.subjectName.toLowerCase() === (subject || '').toLowerCase());
+
+    const studentContext = {
+      requestedSubject: subject,
+      studentPerformanceStatement: performance,
+      nationalSubjectAverageScore: targetSubjectAvg || { averageScore: 4.5 }
+    };
+
     const studentPrompt = `
 You are a empathetic student tutor preparing a candidate for UNEB secondary exams.
 Subject: ${subject}
 Student challenge description: "${performance}"
+
+--- CONTEXTUAL BENCHMARKS ---
+${JSON.stringify(studentContext, null, 2)}
 
 Your output must be a valid JSON object matching this schema exactly, and nothing else:
 {
@@ -391,7 +412,7 @@ Your output must be a valid JSON object matching this schema exactly, and nothin
 }
 `;
 
-    const response = await ai.models.generateContent({
+    const response = await callGeminiWithRetry(ai, {
       model: 'gemini-3.5-flash',
       contents: studentPrompt,
       config: { responseMimeType: "application/json" }
@@ -414,21 +435,41 @@ app.post('/api/predictions', async (req, res) => {
   }
 
   try {
+    let predictionContext: any = null;
+
+    if (targetType === "school") {
+      const schoolId = targetId || "s_budo";
+      predictionContext = {
+        scope: "School Forecast",
+        school: SCHOOLS.find(s => s.id === schoolId),
+        regression: AnalyticsEngine.predictPerformance(schoolId, level)
+      };
+    } else {
+      const outliers = AnalyticsEngine.getOutlierSchools(level);
+      predictionContext = {
+        scope: "National Trajectory Forecast",
+        regression_outliers: outliers.slice(0, 5)
+      };
+    }
+
     const predictionPrompt = `
 You are a senior data forecaster predicting outcomes for Uganda's upcoming 2026 UNEB examination cohort.
 Scope: ${targetType} (Context identifier: ${targetId || 'National Overview'})
 Level: ${level}
 
+--- HISTORICAL REGRESSIONS GROUND TRUTH ---
+${JSON.stringify(predictionContext, null, 2)}
+
 Your output must be a valid JSON object matching this schema exactly, and nothing else:
 {
-  "predictedOutcomes": "Specify expected grade distributions and passing ratios with numerical projections",
-  "confidenceLevel": "Model confidence level (e.g. High, R² = 0.94)",
+  "predictedOutcomes": "Specify expected grade distributions and passing ratios with numerical projections based directly on the regressions provided",
+  "confidenceLevel": "Model confidence level based on provided metrics (e.g. High, R² = 0.94)",
   "factors": ["Contributing factor 1", "Contributing factor 2", "Contributing factor 3"],
   "riskMitigation": ["Risk mitigation strategy 1", "Risk mitigation strategy 2"]
 }
 `;
 
-    const response = await ai.models.generateContent({
+    const response = await callGeminiWithRetry(ai, {
       model: 'gemini-3.5-flash',
       contents: predictionPrompt,
       config: { responseMimeType: "application/json" }
@@ -480,7 +521,7 @@ Guidelines:
    - **Actionable Strategic Recommendations**
 `;
 
-    const response = await ai.models.generateContent({
+    const response = await callGeminiWithRetry(ai, {
       model: 'gemini-3.5-flash',
       contents: analysisPrompt
     });
