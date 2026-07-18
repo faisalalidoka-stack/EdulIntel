@@ -112,7 +112,7 @@ app.post('/api/chat', async (req, res) => {
 
   try {
     // --- STEP 1: AI QUERY PLANNER ---
-    // Use gemini-2.5-flash to structure the intent and extract metadata in structured JSON
+    // Use gemini-3.5-flash to structure the intent and extract metadata in structured JSON
     const plannerPrompt = `
 You are the AI Query Planner for the UNEB Education Intelligence Platform.
 Analyze the user's question and map it to one of our Analytics Engine functions.
@@ -135,7 +135,7 @@ User Question: "${message}"
 `;
 
     const plannerResponse = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       contents: plannerPrompt,
       config: {
         responseMimeType: "application/json"
@@ -151,7 +151,6 @@ User Question: "${message}"
     }
 
     // --- STEP 2: ANALYTICS ENGINE INVOCATION ---
-    // Trigger calculations based on matched intent
     let calculatedResults: any = null;
     let calculationTrace = "";
 
@@ -164,7 +163,7 @@ User Question: "${message}"
       case "compare":
         const idsToCompare = plan.schoolIds && plan.schoolIds.length > 0 
           ? plan.schoolIds 
-          : ["s_budo", "s_kitende"]; // Default if none identified
+          : ["s_budo", "s_kitende"];
         calculatedResults = AnalyticsEngine.compareSchools(idsToCompare, plan.level || ExamLevel.UCE);
         calculationTrace = `Compared schools [${idsToCompare.join(', ')}] for ${plan.level || 'UCE'}`;
         break;
@@ -197,18 +196,15 @@ User Question: "${message}"
         break;
 
       default:
-        // Default to national statistics overview as context
         calculatedResults = AnalyticsEngine.getNationalStats(2025, ExamLevel.UCE);
         calculationTrace = "Defaulted to 2025 National UCE statistics context";
         break;
     }
 
     // --- STEP 3: AI EXPLANATION LAYER ---
-    // Inject the real calculations into the explanation prompt to prevent hallucination
     const explanationPrompt = `
 You are the AI Explanation Layer for the Uganda National Examinations Board (UNEB) Education Intelligence Platform, "EduIntel AI".
-
-Your goal is to explain and summarize computed results from the national analytics engine to a user (who could be a parent, district official, or school administrator).
+Your goal is to explain and summarize computed results from the national analytics engine to a user.
 
 CRITICAL RULE:
 - Do NOT make up or hallucinate any statistics.
@@ -217,7 +213,6 @@ CRITICAL RULE:
 - Present your response using beautiful, structured Markdown. Use bold key terms and clean lists.
 
 User Question: "${message}"
-
 Matched Intent: ${plan.intent}
 Calculated Results from Analytics Engine (RAW DATA):
 ${JSON.stringify(calculatedResults, null, 2)}
@@ -226,7 +221,7 @@ Provide the final calculated response. State the reasoning behind each metric.
 `;
 
     const explanationResponse = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       contents: explanationPrompt
     });
 
@@ -241,6 +236,258 @@ Provide the final calculated response. State the reasoning behind each metric.
 
   } catch (error: any) {
     console.error("Chat error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// AI Report Generator Endpoint
+app.post('/api/reports/generate', async (req, res) => {
+  const { reportType, targetId, year = 2025, level = ExamLevel.UCE } = req.body;
+
+  if (!ai) {
+    return res.status(500).json({ error: "Gemini API key is missing" });
+  }
+
+  try {
+    const reportPrompt = `
+You are a senior education intelligence analyst compiling a formal educational report for Uganda's Ministry of Education.
+Report Category: ${reportType} (context identifier: ${targetId || 'National Overview'})
+Academic Cycle: ${year}
+Curriculum: ${level}
+
+Your output must be a valid JSON object matching this schema exactly, and nothing else (no markdown backticks, no wrapping):
+{
+  "executiveSummary": "A concise paragraph summarizing core performance findings and strategic indicators",
+  "keyInsights": ["Insight 1", "Insight 2", "Insight 3"],
+  "trendAnalysis": "A short summary paragraph tracking performance trajectories across the decade",
+  "predictions": "2026 forecast and projections for this target context based on linear regressions",
+  "confidence": "Calculated statistical confidence description (e.g. High, R² = 0.94)",
+  "recommendations": ["Recommendation 1", "Recommendation 2", "Recommendation 3"],
+  "actionPlan": ["Phase 1 (Month 1-3) Action Plan", "Phase 2 (Month 4-6) Action Plan", "Phase 3 (Month 7-12) Action Plan"]
+}
+`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: reportPrompt,
+      config: { responseMimeType: "application/json" }
+    });
+
+    const parsed = JSON.parse(response.text ? response.text.trim() : '{}');
+    res.json(parsed);
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// AI Policy Advisor Endpoint
+app.post('/api/policy/advise', async (req, res) => {
+  const { topic, queryText } = req.body;
+
+  if (!ai) {
+    return res.status(500).json({ error: "Gemini API key is missing" });
+  }
+
+  try {
+    const policyPrompt = `
+You are a Senior Education Policy Strategist for the Republic of Uganda.
+Formulate a highly strategic, evidence-based advisory brief for the topic: "${topic}".
+Additional context query: "${queryText || 'None'}"
+
+Your output must be a valid JSON object matching this schema exactly, and nothing else:
+{
+  "priorityAreas": "Identify primary areas at risk or requiring immediate interventions",
+  "evidence": "Detail quantitative data trends and historical benchmarks that support this intervention",
+  "expectedImpact": "Forecast expected performance increases or dropout rate reductions",
+  "costConsiderations": "Explain estimated budget structures, subsidies, or teacher allowances required",
+  "recommendedActions": ["Immediate strategic action 1", "Immediate strategic action 2", "Immediate strategic action 3"],
+  "implementationTimeline": "Formulate a concrete quarterly timeline for deployment over 12-18 months"
+}
+`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: policyPrompt,
+      config: { responseMimeType: "application/json" }
+    });
+
+    const parsed = JSON.parse(response.text ? response.text.trim() : '{}');
+    res.json(parsed);
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// AI School Improvement Roadmap Endpoint
+app.post('/api/school-improvement', async (req, res) => {
+  const { schoolId, level } = req.body;
+
+  if (!ai) {
+    return res.status(500).json({ error: "Gemini API key is missing" });
+  }
+
+  try {
+    const school = SCHOOLS.find(s => s.id === schoolId) || SCHOOLS[0];
+    const improvementPrompt = `
+You are an institutional turnaround consultant. Design a school improvement roadmap for:
+School: ${school.name} (District: ${school.districtName}, Level: ${level})
+
+Your output must be a valid JSON object matching this schema exactly, and nothing else:
+{
+  "strengths": ["Strength 1", "Strength 2", "Strength 3"],
+  "weaknesses": ["Weakness 1", "Weakness 2"],
+  "roadmap12Month": [
+    { "month": "Months 1-3", "focus": "Brief focus description", "actions": ["Action 1", "Action 2"] },
+    { "month": "Months 4-6", "focus": "Brief focus description", "actions": ["Action 1", "Action 2"] },
+    { "month": "Months 7-12", "focus": "Brief focus description", "actions": ["Action 1", "Action 2"] }
+  ],
+  "teacherRecs": ["Recommendation 1", "Recommendation 2"],
+  "resourceRecs": ["Resource Upgrade 1", "Resource Upgrade 2"],
+  "expectedOutcomes": ["Outcome target 1", "Outcome target 2"]
+}
+`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: improvementPrompt,
+      config: { responseMimeType: "application/json" }
+    });
+
+    const parsed = JSON.parse(response.text ? response.text.trim() : '{}');
+    res.json(parsed);
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// AI Student Study Planner Endpoint
+app.post('/api/student-assistant', async (req, res) => {
+  const { subject, performance } = req.body;
+
+  if (!ai) {
+    return res.status(500).json({ error: "Gemini API key is missing" });
+  }
+
+  try {
+    const studentPrompt = `
+You are a empathetic student tutor preparing a candidate for UNEB secondary exams.
+Subject: ${subject}
+Student challenge description: "${performance}"
+
+Your output must be a valid JSON object matching this schema exactly, and nothing else:
+{
+  "studyPlan": "A supportive opening paragraph guiding their study mindset",
+  "weakAreas": ["Weak area 1", "Weak area 2", "Weak area 3"],
+  "resources": ["Curriculum handbook or textbook reference", "UNEB past papers range", "Online reference"],
+  "weeklySchedule": [
+    { "day": "Days 1-2", "tasks": ["Specific study task 1", "Specific study task 2"] },
+    { "day": "Days 3-4", "tasks": ["Specific study task 1", "Specific study task 2"] },
+    { "day": "Days 5-7", "tasks": ["Specific study task 1", "Specific study task 2"] }
+  ],
+  "improvementStrategy": "Specific active-recall or memory tip for this subject"
+}
+`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: studentPrompt,
+      config: { responseMimeType: "application/json" }
+    });
+
+    const parsed = JSON.parse(response.text ? response.text.trim() : '{}');
+    res.json(parsed);
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// AI Predictions Endpoint
+app.post('/api/predictions', async (req, res) => {
+  const { targetType, targetId, level = ExamLevel.UCE } = req.body;
+
+  if (!ai) {
+    return res.status(500).json({ error: "Gemini API key is missing" });
+  }
+
+  try {
+    const predictionPrompt = `
+You are a senior data forecaster predicting outcomes for Uganda's upcoming 2026 UNEB examination cohort.
+Scope: ${targetType} (Context identifier: ${targetId || 'National Overview'})
+Level: ${level}
+
+Your output must be a valid JSON object matching this schema exactly, and nothing else:
+{
+  "predictedOutcomes": "Specify expected grade distributions and passing ratios with numerical projections",
+  "confidenceLevel": "Model confidence level (e.g. High, R² = 0.94)",
+  "factors": ["Contributing factor 1", "Contributing factor 2", "Contributing factor 3"],
+  "riskMitigation": ["Risk mitigation strategy 1", "Risk mitigation strategy 2"]
+}
+`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: predictionPrompt,
+      config: { responseMimeType: "application/json" }
+    });
+
+    const parsed = JSON.parse(response.text ? response.text.trim() : '{}');
+    res.json(parsed);
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Analyze imported Google Drive document content with Gemini
+app.post('/api/drive/analyze', async (req, res) => {
+  const { fileName, fileContent, customQuery } = req.body;
+
+  if (!fileName || !fileContent) {
+    return res.status(400).json({ error: 'fileName and fileContent are required' });
+  }
+
+  if (!ai) {
+    return res.json({
+      reply: "The Gemini API Key is not configured yet. Please configure it in the Secrets panel in AI Studio to analyze custom Drive files."
+    });
+  }
+
+  try {
+    const analysisPrompt = `
+You are the Lead Analyst at the EduIntel AI Research Lab in Kampala, Uganda.
+You are tasked with analyzing an educational dataset, spreadsheet, or report imported directly from the user's Google Drive.
+
+File Name: "${fileName}"
+File Content (First 15000 characters):
+\`\`\`
+${fileContent.substring(0, 15000)}
+\`\`\`
+
+User's Analytical Query/Request: "${customQuery || 'Analyze this document, extract key statistical metrics, summarize the main findings, and provide actionable recommendations for Ugandan schools.'}"
+
+Guidelines:
+1. Provide a comprehensive, structured response in beautiful Markdown.
+2. Be highly specific. Quote numbers, tables, or school names from the dataset.
+3. Keep the tone authoritative, encouraging, and academically rigorous.
+4. Structure your response with sections like:
+   - **Executive Summary**
+   - **Key Data Insights & Metrics**
+   - **Detailed Trends & Findings**
+   - **Actionable Strategic Recommendations**
+`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: analysisPrompt
+    });
+
+    res.json({ reply: response.text });
+  } catch (error: any) {
+    console.error("Drive analysis error:", error);
     res.status(500).json({ error: error.message });
   }
 });
